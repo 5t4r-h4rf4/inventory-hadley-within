@@ -96,31 +96,22 @@ class CalculationController extends Controller
         $shortage_cost = 0.10 * $v; // 10% of item price
 
         try {
-            // 1. XR = D * R
-            $xr = $d * $r_period;
+            $result = $this->runIterationSearch($d, $lead_time, $ordering_cost, $holding_cost, $shortage_cost, $sigma, $v);
+            $cheapest = $result['optimal'];
 
-            // 2. XR+L = D * (R + L)
-            $xr_l = $d * ($r_period + $lead_time);
+            if (!$cheapest) {
+                return back()->withErrors(['math_error' => 'Perhitungan gagal menghasilkan kebijakan optimal. Periksa kembali input data Anda.'])->withInput();
+            }
 
-            // 3. Qp = 1.3 * XR^0.494 * ( A / h )^0.506 * ( 1 + sigma^2 / XR^2 )^0.116
-            $term_xr = pow($xr, 0.494);
-            $term_a_h = pow($ordering_cost / $holding_cost, 0.506);
-            $term_ratio = 1.0 + (pow($sigma, 2) / pow($xr, 2));
-            $term_ratio_pow = pow($term_ratio, 0.116);
-            $qp = 1.3 * $term_xr * $term_a_h * $term_ratio_pow;
-
-            // 4. z = Qp / sigma
+            // Extract values from the optimal (cheapest) iteration row
+            $r_period_opt = $cheapest['t0'];
+            $xr = $d * $r_period_opt;
+            $xr_l = $d * ($r_period_opt + $lead_time);
+            $qp = $d * $r_period_opt;
+            $reorder_point = $cheapest['r'];
+            $max_inventory = $reorder_point + $qp;
             $z_value = $qp / $sigma;
-
-            // 5. Sp = 0.973 * XR+L + sigma * ( 0.183 / z + 1.063 - 2.192 * z )
-            $sp_z_term = (0.183 / $z_value) + 1.063 - (2.192 * $z_value);
-            $sp = (0.973 * $xr_l) + ($sigma * $sp_z_term);
-
-            // 6. Reorder Point (s) = Sp
-            $reorder_point = $sp;
-
-            // 7. Maximum Inventory (S) = Sp + Qp
-            $max_inventory = $sp + $qp;
+            $sp = $reorder_point;
 
             // Check for NaN or Infinite results due to formula constraints
             if (is_nan($qp) || is_infinite($qp) || is_nan($sp) || is_infinite($sp) || is_nan($reorder_point) || is_nan($max_inventory)) {
@@ -133,7 +124,7 @@ class CalculationController extends Controller
                 'start_date' => $request->start_date,
                 'end_date' => $request->end_date,
                 'd' => $d,
-                'r_period' => $r_period,
+                'r_period' => $r_period_opt,
                 'lead_time' => $lead_time,
                 'ordering_cost' => $ordering_cost,
                 'item_price' => $v,
@@ -185,10 +176,8 @@ class CalculationController extends Controller
         $calculation->load('product');
         $iterations = $this->generateIterations($calculation);
         return view('calculations.print', compact('calculation', 'iterations'));
-    }
-
-    /**
-     * Generate the 20 iterations for the Hadley-Whitin model dynamically.
+    }    /**
+     * Generate the iterations for the Hadley-Whitin model dynamically.
      */
     private function generateIterations(InventoryCalculation $calculation)
     {
@@ -201,52 +190,54 @@ class CalculationController extends Controller
         $holding_cost = (float) $calculation->holding_cost;
         $shortage_cost = (float) $calculation->shortage_cost;
         
-        // T_EOQ = sqrt((2 * A) / (h * D))
+        $result = $this->runIterationSearch($d, $lead_time, $ordering_cost, $holding_cost, $shortage_cost, $sigma, $v);
+        return $result['iterations'];
+    }
+
+    /**
+     * Run the Hadley-Whitin iteration search.
+     * Returns an array containing the iterations table and the optimal parameter values.
+     */
+    private function runIterationSearch($d, $lead_time, $ordering_cost, $holding_cost, $shortage_cost, $sigma, $v)
+    {
         $t_eoq = sqrt((2 * $ordering_cost) / ($holding_cost * $d));
         
-        $rows = [];
+        $iterations = [];
         $previous_total = null;
+        $cheapest_row = null;
+        
         for ($i = 1; $i <= 20; $i++) {
             $t0 = $t_eoq - ($i - 1) * 0.010;
+            if ($t0 <= 0) {
+                break;
+            }
             
-            // alpha
             $alpha = ($t0 * $holding_cost) / $shortage_cost;
-            
-            // Za
             $za = 0.50 - 0.39 * $alpha;
-            
-            // f(Za)
             $f_za = 0.30 + 0.20 * $za;
-            
-            // psi(Za) (Normal loss function)
             $psi_za = 0.361 - 0.326 * $za;
             
-            // N (Safety Stock / Expected Shortage)
-            // Formula II-7: N = sigma * sqrt(T + L) * [f(Za) - Za * alpha]
             $t0_l = max(0.0001, $t0 + $lead_time);
+            
+            // Expected shortage per cycle (N)
             $n = $sigma * sqrt($t0_l) * ($f_za - $za * $alpha);
             
-            // R (ROP)
-            // Formula II-6: R = D(T + L) + Za * sigma * sqrt(T + L)
+            // Reorder Point (R)
             $r = $d * $t0_l + $za * $sigma * sqrt($t0_l);
             
-            // Ob (purchase cost)
             $ob = $v * $d;
-            
-            // Op (ordering cost)
-            $op = abs($t0) > 0.00001 ? ($ordering_cost / $t0) : INF;
-            
-            // Os (holding cost)
-            // Os = h * ( (D * T0 / 2) + Za * sigma * sqrt(T + L) )
+            $op = $ordering_cost / $t0;
             $os = $holding_cost * (($d * $t0) / 2 + $za * $sigma * sqrt($t0_l));
-            
-            // Ok (shortage cost)
-            // Ok = p * N / T0
-            $ok = abs($t0) > 0.00001 ? (($shortage_cost * $n) / $t0) : INF;
+            $ok = ($shortage_cost * $n) / $t0;
             
             $total = $ob + $op + $os + $ok;
             
-            $rows[] = [
+            // Logika dalam iterasi: stop ketika hasil iterasi selanjutnya lebih mahal (Total Biaya)
+            if ($previous_total !== null && $total > $previous_total) {
+                break;
+            }
+            
+            $row = [
                 'no' => $i,
                 't0' => $t0,
                 'alpha' => $alpha,
@@ -255,43 +246,28 @@ class CalculationController extends Controller
                 'psi_za' => $psi_za,
                 'r' => $r,
                 'n' => $n,
+                'ekspektasi_stockout' => $n / $t0,
                 'ob' => $ob,
                 'op' => $op,
                 'os' => $os,
                 'ok' => $ok,
-                'total' => $total
+                'total' => $total,
+                'status' => 'LANJUT'
             ];
-
-            if ($previous_total !== null && $total > $previous_total) {
-                // Stopped because a minimum total cost has been reached and cost starts to rise
-                break;
-            }
+            
+            $iterations[] = $row;
+            $cheapest_row = $row;
             $previous_total = $total;
         }
         
-        // Find optimal (minimum cost where t0 > 0)
-        $valid_min = INF;
-        $optimal_no = -1;
-        foreach ($rows as $row) {
-            if ($row['t0'] > 0 && $row['total'] < $valid_min) {
-                $valid_min = $row['total'];
-                $optimal_no = $row['no'];
-            }
+        if ($cheapest_row) {
+            $iterations[count($iterations) - 1]['status'] = 'OPTIMAL';
         }
         
-        // Assign statuses
-        foreach ($rows as &$row) {
-            if ($row['no'] == $optimal_no) {
-                $row['status'] = 'OPTIMAL';
-            } elseif ($row['t0'] <= 0) {
-                $row['status'] = 'TERAKHIR';
-            } else {
-                $row['status'] = 'LANJUT';
-            }
-        }
-        unset($row);
-        
-        return $rows;
+        return [
+            'iterations' => $iterations,
+            'optimal' => $cheapest_row
+        ];
     }
 
     /**

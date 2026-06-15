@@ -90,6 +90,22 @@
     </style>
 </head>
 <body>
+@php
+    $optimalRow = collect($iterations)->firstWhere('status', 'OPTIMAL') ?? [
+        'no' => '-',
+        'total' => $calculation->ob + $calculation->op + $calculation->os + $calculation->ok,
+        'n' => 0,
+        't0' => $calculation->r_period,
+        'r' => $calculation->reorder_point,
+        'alpha' => 0,
+        'za' => $calculation->z_value,
+        'f_za' => 0,
+        'ekspektasi_stockout' => 0,
+        'op' => $calculation->ordering_cost / max(0.0001, $calculation->r_period),
+        'os' => 0,
+        'ok' => 0
+    ];
+@endphp
 
     <!-- Header Report -->
     <div class="report-header">
@@ -255,7 +271,7 @@
                     </tr>
                     <tr class="table-success" style="background-color: #f0fdf4;">
                         <td><strong>s (Reorder Point) / Sp</strong></td>
-                        <td><strong>Titik Pemesanan Kembali - Sp (Ehrhardt Power Approx)</strong></td>
+                        <td><strong>Titik Pemesanan Kembali - s (Optimasi Iterasi Hadley-Within)</strong></td>
                         <td class="text-end text-success fw-bold"><span class="metric-badge metric-badge-success">{{ number_format($calculation->reorder_point, 2, ',', '.') }} unit</span></td>
                     </tr>
                     <tr class="table-primary" style="background-color: #e0e7ff;">
@@ -294,7 +310,8 @@
                     <th>f(Z<sub>&alpha;</sub>)</th>
                     <th>&psi;(Z<sub>&alpha;</sub>)</th>
                     <th>R (ROP)</th>
-                    <th>N (Safety)</th>
+                    <th>N (Kekurangan)</th>
+                    <th>Ekspektasi Stockout (N/T<sub>0</sub>)</th>
                     <th>Ob</th>
                     <th>Op</th>
                     <th>Os</th>
@@ -329,6 +346,7 @@
                         <td>{{ number_format($it['psi_za'], 3, ',', '.') }}</td>
                         <td>{{ number_format($it['r'], 3, ',', '.') }}</td>
                         <td>{{ number_format($it['n'], 2, ',', '.') }}</td>
+                        <td class="fw-semibold text-danger">{{ number_format($it['ekspektasi_stockout'], 2, ',', '.') }} unit/thn</td>
                         <td>Rp {{ number_format($it['ob'], 0, ',', '.') }}</td>
                         <td class="{{ $it['op'] < 0 ? 'text-danger' : '' }}">
                             @if(is_infinite($it['op']))
@@ -382,79 +400,83 @@
                 <tr>
                     <td class="fw-bold text-center text-muted">Langkah 1</td>
                     <td>
-                        <strong>Demand Review Period (XR)</strong><br>
-                        <small class="text-muted">Formula: D &times; R</small>
+                        <strong>Waktu Tinjau Awal (T<sub>EOQ</sub>)</strong><br>
+                        <small class="text-muted">Formula: &radic;(2A / hD)</small>
                     </td>
                     <td>
-                        D = {{ number_format($calculation->d, 4, ',', '.') }}<br>
-                        R = {{ number_format($calculation->r_period, 4, ',', '.') }} tahun<br>
-                        XR = {{ number_format($calculation->d, 4, ',', '.') }} &times; {{ number_format($calculation->r_period, 4, ',', '.') }}
+                        A = Rp {{ number_format($calculation->ordering_cost, 2, ',', '.') }}<br>
+                        h = Rp {{ number_format($calculation->holding_cost, 2, ',', '.') }}<br>
+                        D = {{ number_format($calculation->d, 4, ',', '.') }} unit/tahun<br>
+                        T<sub>EOQ</sub> = &radic;((2 &times; {{ $calculation->ordering_cost }}) / ({{ $calculation->holding_cost }} &times; {{ $calculation->d }}))
                     </td>
-                    <td class="text-end fw-bold text-dark">{{ number_format($calculation->xr, 4, ',', '.') }}</td>
+                    <td class="text-end fw-bold text-dark">{{ number_format(sqrt((2 * $calculation->ordering_cost) / ($calculation->holding_cost * $calculation->d)), 4, ',', '.') }} tahun</td>
                 </tr>
                 <!-- Step 2 -->
                 <tr>
                     <td class="fw-bold text-center text-muted">Langkah 2</td>
                     <td>
-                        <strong>Demand Protection Period (XR+L)</strong><br>
-                        <small class="text-muted">Formula: D &times; (R + L)</small>
+                        <strong>Iterasi Optimasi Total Biaya</strong><br>
+                        <small class="text-muted">Metode: Decrement T<sub>0</sub> sebesar 0.010</small>
                     </td>
                     <td>
-                        L = {{ number_format($calculation->lead_time, 4, ',', '.') }} tahun (Fixed)<br>
-                        XR+L = {{ number_format($calculation->d, 4, ',', '.') }} &times; ({{ number_format($calculation->r_period, 4, ',', '.') }} + {{ number_format($calculation->lead_time, 4, ',', '.') }})
+                        Mulai dari T<sub>EOQ</sub>, dilakukan perhitungan total biaya untuk setiap T<sub>0</sub>.<br>
+                        Iterasi dihentikan karena biaya total pada iterasi berikutnya mulai meningkat.
                     </td>
-                    <td class="text-end fw-bold text-dark">{{ number_format($calculation->xr_l, 4, ',', '.') }}</td>
+                    <td class="text-end fw-bold text-success">Iterasi Ke-{{ $optimalRow['no'] }} (Terpilih)</td>
                 </tr>
                 <!-- Step 3 -->
                 <tr>
                     <td class="fw-bold text-center text-muted">Langkah 3</td>
                     <td>
-                        <strong>Order Quantity Heuristic (Qp)</strong><br>
-                        <small class="text-muted">Formula: 1.3 &times; XR<sup>0.494</sup> &times; (A / h)<sup>0.506</sup> &times; (1 + &sigma;<sup>2</sup> / XR<sup>2</sup>)<sup>0.116</sup></small>
+                        <strong>Parameter Optimal Terpilih</strong><br>
+                        <small class="text-muted">Hasil dari Iterasi Ke-{{ $optimalRow['no'] }}</small>
                     </td>
                     <td>
-                        A = Rp {{ number_format($calculation->ordering_cost, 2, ',', '.') }}<br>
-                        h = Rp {{ number_format($calculation->holding_cost, 2, ',', '.') }}<br>
-                        &sigma; = {{ number_format($calculation->sigma, 4, ',', '.') }}<br>
-                        Qp = 1.3 &times; ({{ number_format($calculation->xr, 4, ',', '.') }}<sup>0.494</sup>) &times; ({{ number_format($calculation->ordering_cost, 2, ',', '.') }} / {{ number_format($calculation->holding_cost, 2, ',', '.') }})<sup>0.506</sup> &times; (1 + {{ number_format($calculation->sigma, 4, ',', '.') }}<sup>2</sup> / {{ number_format($calculation->xr, 4, ',', '.') }}<sup>2</sup>)<sup>0.116</sup>
+                        T<sub>0</sub><sup>*</sup> = {{ number_format($optimalRow['t0'], 4, ',', '.') }} tahun<br>
+                        &alpha;<sup>*</sup> = (T<sub>0</sub><sup>*</sup> &times; h) / p = {{ number_format($optimalRow['alpha'], 4, ',', '.') }}<br>
+                        Z<sub>&alpha;</sub><sup>*</sup> = 0.50 - 0.39 &times; &alpha;<sup>*</sup> = {{ number_format($optimalRow['za'], 4, ',', '.') }}<br>
+                        f(Z<sub>&alpha;</sub><sup>*</sup>) = 0.30 + 0.20 &times; Z<sub>&alpha;</sub><sup>*</sup> = {{ number_format($optimalRow['f_za'], 4, ',', '.') }}
                     </td>
-                    <td class="text-end fw-bold text-primary">{{ number_format($calculation->qp, 4, ',', '.') }}</td>
+                    <td class="text-end fw-bold text-dark">T<sub>0</sub><sup>*</sup> = {{ number_format($optimalRow['t0'], 4, ',', '.') }} tahun</td>
                 </tr>
                 <!-- Step 4 -->
                 <tr>
                     <td class="fw-bold text-center text-muted">Langkah 4</td>
                     <td>
-                        <strong>Nilai Faktor z</strong><br>
-                        <small class="text-muted">Formula: Qp / &sigma;</small>
+                        <strong>Ekspektasi Kekurangan Persediaan (N)</strong><br>
+                        <small class="text-muted">Formula: &sigma; &times; &radic;(T<sub>0</sub><sup>*</sup> + L) &times; [f(Z<sub>&alpha;</sub><sup>*</sup>) - Z<sub>&alpha;</sub><sup>*</sup> &times; &alpha;<sup>*</sup>]</small>
                     </td>
                     <td>
-                        Qp = {{ number_format($calculation->qp, 4, ',', '.') }}<br>
                         &sigma; = {{ number_format($calculation->sigma, 4, ',', '.') }}<br>
-                        z = {{ number_format($calculation->qp, 4, ',', '.') }} / {{ number_format($calculation->sigma, 4, ',', '.') }}
+                        L = {{ number_format($calculation->lead_time, 4, ',', '.') }} tahun<br>
+                        N = {{ number_format($calculation->sigma, 4, ',', '.') }} &times; &radic;({{ number_format($optimalRow['t0'], 4, ',', '.') }} + {{ $calculation->lead_time }}) &times; ({{ number_format($optimalRow['f_za'], 4, ',', '.') }} - {{ number_format($optimalRow['za'], 4, ',', '.') }} &times; {{ number_format($optimalRow['alpha'], 4, ',', '.') }})
                     </td>
-                    <td class="text-end fw-bold text-dark">{{ number_format($calculation->z_value, 4, ',', '.') }}</td>
+                    <td class="text-end fw-bold text-dark">{{ number_format($optimalRow['n'], 4, ',', '.') }} unit</td>
                 </tr>
                 <!-- Step 5 -->
                 <tr>
                     <td class="fw-bold text-center text-muted">Langkah 5</td>
                     <td>
-                        <strong>Batas Persediaan (Sp)</strong><br>
-                        <small class="text-muted">Formula: 0.973 &times; XR+L + &sigma; &times; (0.183 / z + 1.063 - 2.192 &times; z)</small>
+                        <strong>Ekspektasi Stockout per Tahun</strong><br>
+                        <small class="text-muted">Formula: N / T<sub>0</sub><sup>*</sup></small>
                     </td>
                     <td>
-                        Sp = 0.973 &times; {{ number_format($calculation->xr_l, 4, ',', '.') }} + {{ number_format($calculation->sigma, 4, ',', '.') }} &times; (0.183 / {{ number_format($calculation->z_value, 4, ',', '.') }} + 1.063 - 2.192 &times; {{ number_format($calculation->z_value, 4, ',', '.') }})
+                        N = {{ number_format($optimalRow['n'], 4, ',', '.') }} unit<br>
+                        T<sub>0</sub><sup>*</sup> = {{ number_format($optimalRow['t0'], 4, ',', '.') }} tahun<br>
+                        Ekspektasi Stockout = {{ number_format($optimalRow['n'], 4, ',', '.') }} / {{ number_format($optimalRow['t0'], 4, ',', '.') }}
                     </td>
-                    <td class="text-end fw-bold text-success">{{ number_format($calculation->sp, 4, ',', '.') }}</td>
+                    <td class="text-end fw-bold text-danger">{{ number_format($optimalRow['ekspektasi_stockout'], 4, ',', '.') }} unit/tahun</td>
                 </tr>
                 <!-- Step 6 -->
                 <tr class="table-success" style="background-color: #f0fdf4;">
                     <td class="fw-bold text-center text-success">Hasil</td>
                     <td>
-                        <strong>Kebijakan Persediaan (R, s, S)</strong>
+                        <strong>Kebijakan Persediaan Optimal (R, s, S)</strong>
                     </td>
                     <td>
-                        R = <strong>{{ round($calculation->r_period * 365) }} hari</strong> | s = <strong>{{ number_format($calculation->reorder_point, 2, ',', '.') }}</strong><br>
-                        S = Sp + Qp = {{ number_format($calculation->sp, 4, ',', '.') }} + {{ number_format($calculation->qp, 4, ',', '.') }}
+                        R = <strong>{{ round($calculation->r_period * 365) }} hari</strong> (T<sub>0</sub><sup>*</sup>)<br>
+                        s (Reorder Point) = R = <strong>{{ number_format($calculation->reorder_point, 2, ',', '.') }} unit</strong><br>
+                        S = s + Q<sub>p</sub> = {{ number_format($calculation->reorder_point, 4, ',', '.') }} + {{ number_format($calculation->qp, 4, ',', '.') }}
                     </td>
                     <td class="text-end fw-bold text-success">
                         s = {{ number_format($calculation->reorder_point, 2, ',', '.') }}<br>
