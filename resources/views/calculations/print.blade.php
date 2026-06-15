@@ -274,6 +274,16 @@
                         <td><strong>Titik Pemesanan Kembali - s (min(Sp, So) jika pu &ge; k, else Sp)</strong></td>
                         <td class="text-end text-success fw-bold"><span class="metric-badge metric-badge-success">{{ number_format($calculation->reorder_point, 2, ',', '.') }} unit</span></td>
                     </tr>
+                    <tr>
+                        <td><strong>N</strong></td>
+                        <td>Ekspektasi Kekurangan Persediaan per Siklus</td>
+                        <td class="text-end fw-semibold">{{ number_format($optimalRow['n'], 4, ',', '.') }} unit</td>
+                    </tr>
+                    <tr class="table-danger" style="background-color: #fef2f2;">
+                        <td><strong>Ekspektasi Stockout</strong></td>
+                        <td><strong>Rata-rata Ekspektasi Kekurangan per Tahun (N / T0)</strong></td>
+                        <td class="text-end text-danger fw-bold"><span class="metric-badge bg-danger-subtle text-danger-emphasis">{{ number_format($optimalRow['ekspektasi_stockout'], 2, ',', '.') }} unit/tahun</span></td>
+                    </tr>
                     <tr class="table-primary" style="background-color: #e0e7ff;">
                         <td><strong>Qp</strong></td>
                         <td><strong>Jumlah Pemesanan Optimal (Ekonomis)</strong></td>

@@ -150,6 +150,22 @@
                         </div>
                     </div>
 
+                    <div class="col-sm-6">
+                        <div class="p-3 border rounded-3 bg-light">
+                            <div class="text-muted mb-1" style="font-size: 11px;">Ekspektasi Kekurangan (N)</div>
+                            <h5 class="fw-bold text-dark mb-0">{{ number_format($optimalRow['n'], 4, ',', '.') }} unit</h5>
+                            <small class="text-muted" style="font-size: 10px;">Rumus: &sigma; * &radic;(T + L) * [f(Z_&alpha;) - (Z_&alpha; * &psi;(Z_&alpha;))]</small>
+                        </div>
+                    </div>
+
+                    <div class="col-sm-6">
+                        <div class="p-3 border border-danger-subtle rounded-3" style="background-color: #fef2f2;">
+                            <div class="text-danger fw-bold mb-1" style="font-size: 11px;">Ekspektasi Stockout (N / T<sub>0</sub>)</div>
+                            <h5 class="fw-bold text-danger mb-0">{{ number_format($optimalRow['ekspektasi_stockout'], 4, ',', '.') }} unit/tahun</h5>
+                            <small class="text-danger" style="font-size: 10px;">Rata-rata ekspektasi kekurangan per tahun</small>
+                        </div>
+                    </div>
+
                     <!-- Core Policy parameters -->
                     <div class="col-md-6">
                         <div class="p-3 border border-primary-subtle rounded-3" style="background-color: #e0e7ff;">
