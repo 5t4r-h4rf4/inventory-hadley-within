@@ -105,13 +105,13 @@ class CalculationController extends Controller
 
             // Extract values from the optimal (cheapest) iteration row
             $r_period_opt = $cheapest['t0'];
-            $xr = $d * $r_period_opt;
-            $xr_l = $d * ($r_period_opt + $lead_time);
-            $qp = $d * $r_period_opt;
-            $reorder_point = $cheapest['r'];
-            $max_inventory = $reorder_point + $qp;
-            $z_value = $qp / $sigma;
-            $sp = $reorder_point;
+            $xr = $cheapest['xr'];
+            $xr_l = $cheapest['xr_l'];
+            $qp = $cheapest['qp'];
+            $reorder_point = $cheapest['s'];
+            $max_inventory = $cheapest['S'];
+            $z_value = $cheapest['z'];
+            $sp = $cheapest['sp'];
 
             // Check for NaN or Infinite results due to formula constraints
             if (is_nan($qp) || is_infinite($qp) || is_nan($sp) || is_infinite($sp) || is_nan($reorder_point) || is_nan($max_inventory)) {
@@ -176,7 +176,9 @@ class CalculationController extends Controller
         $calculation->load('product');
         $iterations = $this->generateIterations($calculation);
         return view('calculations.print', compact('calculation', 'iterations'));
-    }    /**
+    }
+
+    /**
      * Generate the iterations for the Hadley-Whitin model dynamically.
      */
     private function generateIterations(InventoryCalculation $calculation)
@@ -212,22 +214,49 @@ class CalculationController extends Controller
                 break;
             }
             
+            // 2. Alpha (α)
             $alpha = ($t0 * $holding_cost) / $shortage_cost;
-            $za = 0.50 - 0.39 * $alpha;
-            $f_za = 0.30 + 0.20 * $za;
-            $psi_za = 0.361 - 0.326 * $za;
+            $alpha_clipped = min(0.9999, max(0.0001, $alpha));
             
-            $t0_l = max(0.0001, $t0 + $lead_time);
+            // Z_alpha from normal distribution
+            $za = $this->stdNormalInverseCdf(1.0 - $alpha_clipped);
+            $f_za = $this->stdNormalPdf($za);
+            $psi_za = $this->stdNormalCdf($za);
             
-            // Expected shortage per cycle (N)
-            $n = $sigma * sqrt($t0_l) * ($f_za - $za * $alpha);
+            // 3. R (Maximum Inventory Target in iteration)
+            $r = $d * ($t0 + $lead_time) + ($za * sqrt($t0 + $lead_time));
             
-            // Reorder Point (R)
-            $r = $d * $t0_l + $za * $sigma * sqrt($t0_l);
+            // 4. Expected Shortage (N)
+            $n = $sigma * sqrt($t0 + $lead_time) * ($f_za - ($za * $psi_za));
             
+            // 5. Optimal Order Batch (Qp) & Sp
+            $xr = $d * $r;
+            $xr_l = $d * ($r + $lead_time);
+            $sigma_R_L = $sigma * sqrt($r + $lead_time);
+            
+            // Ensure xr is positive to avoid pow() error
+            $xr_safe = max(0.0001, $xr);
+            $qp = 1.3 * pow($xr_safe, 0.494) * pow($ordering_cost / $holding_cost, 0.506) * pow(1.0 + (pow($sigma_R_L, 2) / pow($xr_safe, 2)), 0.116);
+            
+            // z parameter
+            $z_val = $qp / sqrt(max(0.0001, $sigma_R_L * $shortage_cost));
+            
+            // Sp limit
+            $sp = 0.973 * $xr_l + $sigma_R_L * ((0.183 / max(0.0001, $z_val)) + 1.063 - (2.192 * $z_val));
+            
+            // 6. So
+            $So = $xr_l + $za * $sigma_R_L;
+            $k = $holding_cost / ($shortage_cost + $holding_cost);
+            $pu = 1.0 - $alpha;
+            
+            // 7. s (Reorder Point) and S (Maximum Level)
+            $s = ($pu >= $k) ? min($sp, $So) : $sp;
+            $S = $sp + $qp;
+            
+            // Costs calculation
             $ob = $v * $d;
             $op = $ordering_cost / $t0;
-            $os = $holding_cost * (($d * $t0) / 2 + $za * $sigma * sqrt($t0_l));
+            $os = $holding_cost * (($d * $t0) / 2 + $za * sqrt($t0 + $lead_time));
             $ok = ($shortage_cost * $n) / $t0;
             
             $total = $ob + $op + $os + $ok;
@@ -247,6 +276,14 @@ class CalculationController extends Controller
                 'r' => $r,
                 'n' => $n,
                 'ekspektasi_stockout' => $n / $t0,
+                'xr' => $xr,
+                'xr_l' => $xr_l,
+                'qp' => $qp,
+                'z' => $z_val,
+                'sp' => $sp,
+                'so' => $So,
+                's' => $s,
+                'S' => $S,
                 'ob' => $ob,
                 'op' => $op,
                 'os' => $os,
@@ -354,4 +391,47 @@ class CalculationController extends Controller
 
         return response()->stream($callback, 200, $headers);
     }
+
+    /**
+     * Standard Normal Probability Density Function f(z)
+     */
+    private function stdNormalPdf($z)
+    {
+        return (1.0 / sqrt(2.0 * M_PI)) * exp(-$z * $z / 2.0);
+    }
+
+    /**
+     * Standard Normal Cumulative Distribution Function psi(z)
+     */
+    private function stdNormalCdf($z)
+    {
+        $t = 1.0 / (1.0 + 0.2316419 * abs($z));
+        $d = 0.39894228040143 * exp(-$z * $z / 2.0);
+        $p = $d * $t * (0.319381530 + $t * (-0.356563782 + $t * (1.781477937 + $t * (-1.821255978 + $t * 1.330274429))));
+        if ($z > 0) {
+            return 1.0 - $p;
+        }
+        return $p;
+    }
+
+    /**
+     * Standard Normal Inverse Cumulative Distribution Function
+     * Beasley-Springer-Moro or rational approximation for finding Z_alpha from alpha
+     */
+    private function stdNormalInverseCdf($p)
+    {
+        if ($p <= 0.0001) return -3.89; // Clip values for numerical stability
+        if ($p >= 0.9999) return 3.89;
+        
+        if ($p < 0.5) {
+            $t = sqrt(-2.0 * log($p));
+            return -($t - ((2.515517 + 0.802853 * $t + 0.010328 * $t * $t) / 
+                          (1.0 + 1.432788 * $t + 0.189269 * $t * $t + 0.001308 * $t * $t * $t)));
+        } else {
+            $t = sqrt(-2.0 * log(1.0 - $p));
+            return $t - ((2.515517 + 0.802853 * $t + 0.010328 * $t * $t) / 
+                         (1.0 + 1.432788 * $t + 0.189269 * $t * $t + 0.001308 * $t * $t * $t));
+        }
+    }
 }
+
